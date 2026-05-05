@@ -19,7 +19,7 @@ from .mac_modes import comb1_generate_products, comb2_reduce_products, comb3_mod
 def _require_pycircuit() -> None:
     if cas is None or compile_cycle_aware is None or wire_of is None or mux is None:
         raise RuntimeError(
-            "pyCircuit 未安裝。請先依 README 設定 PYTHONPATH，或安裝 LinxISA/pyCircuit frontend。"
+            "pyCircuit is not installed. Please set PYTHONPATH according to README, or install LinxISA/pyCircuit frontend."
         )
 
 
