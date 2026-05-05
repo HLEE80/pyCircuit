@@ -61,6 +61,8 @@ Extract executable checks from `docs/spec.md`:
 3. After each build, sync deliverable RTL artifacts from the build output tree into `rtl/build/`.
 4. Refresh `filelist/pe_int.f` after each sync so simulations consume the latest deliverable set.
 5. Do not manually patch final RTL deliverables.
+6. Use uppercase Verilog/PyCircuit module identifiers for deliverable RTL modules (for example `PE_INT`).
+7. Use lowercase snake_case filenames for RTL deliverables (for example `pe_int.v`).
 
 ### Step B.1: PyCircuit Structure Rules
 

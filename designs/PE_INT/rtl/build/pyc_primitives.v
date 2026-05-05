@@ -1,9 +1,9 @@
 // pyCircuit Verilog primitives (concatenated)
 /* verilator lint_off DECLFILENAME */
 
-// --- pyc_reg.v
-// Simple synchronous reset register (prototype).
-module pyc_reg #(
+// --- PYC_REG.v
+// Register with asynchronous reset assertion for PE_INT deliverable RTL.
+module PYC_REG #(
   parameter WIDTH = 1
 ) (
   input             clk,
@@ -13,7 +13,7 @@ module pyc_reg #(
   input  [WIDTH-1:0] init,
   output reg [WIDTH-1:0] q
 );
-  always @(posedge clk) begin
+  always @(posedge clk or posedge rst) begin
     if (rst)
       q <= init;
     else if (en)
@@ -22,9 +22,9 @@ module pyc_reg #(
 endmodule
 
 
-// --- pyc_fifo.v
+// --- PYC_FIFO.v
 // Ready/valid FIFO with synchronous reset (prototype).
-module pyc_fifo #(
+module PYC_FIFO #(
   parameter WIDTH = 1,
   parameter DEPTH = 2
 ) (
@@ -44,7 +44,7 @@ module pyc_fifo #(
   `ifndef SYNTHESIS
   initial begin
     if (DEPTH <= 0) begin
-      $display("ERROR: pyc_fifo DEPTH must be > 0");
+      $display("ERROR: PYC_FIFO DEPTH must be > 0");
       $finish;
     end
   end
@@ -121,13 +121,13 @@ module pyc_fifo #(
 endmodule
 
 
-// --- pyc_byte_mem.v
+// --- PYC_BYTE_MEM.v
 // Byte-addressed memory (prototype).
 //
 // - `DEPTH` is in bytes.
 // - Combinational little-endian read window.
 // - Byte-enable write on posedge.
-module pyc_byte_mem #(
+module PYC_BYTE_MEM #(
   parameter ADDR_WIDTH = 64,
   parameter DATA_WIDTH = 64,
   parameter DEPTH = 1024,
@@ -198,7 +198,7 @@ module pyc_byte_mem #(
 endmodule
 
 
-// --- pyc_sync_mem.v
+// --- PYC_SYNC_MEM.v
 // Synchronous 1R1W memory with registered read data (prototype).
 //
 // - `DEPTH` is in entries (not bytes).
@@ -208,7 +208,7 @@ endmodule
 //
 // Note: Read-during-write to the same address returns the pre-write data
 // ("old-data") by default.
-module pyc_sync_mem #(
+module PYC_SYNC_MEM #(
   parameter ADDR_WIDTH = 64,
   parameter DATA_WIDTH = 64,
   parameter DEPTH = 1024
@@ -228,7 +228,7 @@ module pyc_sync_mem #(
   `ifndef SYNTHESIS
   initial begin
     if (DEPTH <= 0) begin
-      $display("ERROR: pyc_sync_mem DEPTH must be > 0");
+      $display("ERROR: PYC_SYNC_MEM DEPTH must be > 0");
       $finish;
     end
   end
@@ -307,14 +307,14 @@ module pyc_sync_mem #(
 endmodule
 
 
-// --- pyc_sync_mem_dp.v
+// --- PYC_SYNC_MEM_DP.v
 // Synchronous 2R1W memory with registered read data (prototype).
 //
 // - `DEPTH` is in entries (not bytes).
 // - Both reads are synchronous (registered outputs).
 // - One write port with byte enables `wstrb`.
 // - Read-during-write to the same address returns pre-write data ("old-data") by default.
-module pyc_sync_mem_dp #(
+module PYC_SYNC_MEM_DP #(
   parameter ADDR_WIDTH = 64,
   parameter DATA_WIDTH = 64,
   parameter DEPTH = 1024
@@ -338,7 +338,7 @@ module pyc_sync_mem_dp #(
   `ifndef SYNTHESIS
   initial begin
     if (DEPTH <= 0) begin
-      $display("ERROR: pyc_sync_mem_dp DEPTH must be > 0");
+      $display("ERROR: PYC_SYNC_MEM_DP DEPTH must be > 0");
       $finish;
     end
   end
@@ -432,7 +432,7 @@ module pyc_sync_mem_dp #(
 endmodule
 
 
-// --- pyc_async_fifo.v
+// --- PYC_ASYNC_FIFO.v
 // Async ready/valid FIFO with gray-code pointers (prototype).
 //
 // - Strict ready/valid handshake (no combinational cross-domain paths).
@@ -440,7 +440,7 @@ endmodule
 // - Synchronous resets (per domain).
 //
 // This is a minimal, synthesizable async FIFO suitable for CDC of data streams.
-module pyc_async_fifo #(
+module PYC_ASYNC_FIFO #(
   parameter WIDTH = 1,
   parameter DEPTH = 2
 ) (
@@ -461,11 +461,11 @@ module pyc_async_fifo #(
   `ifndef SYNTHESIS
   initial begin
     if (DEPTH < 2) begin
-      $display("ERROR: pyc_async_fifo DEPTH must be >= 2");
+      $display("ERROR: PYC_ASYNC_FIFO DEPTH must be >= 2");
       $finish;
     end
     if ((DEPTH & (DEPTH - 1)) != 0) begin
-      $display("ERROR: pyc_async_fifo DEPTH must be a power of two");
+      $display("ERROR: PYC_ASYNC_FIFO DEPTH must be a power of two");
       $finish;
     end
   end
@@ -608,13 +608,13 @@ module pyc_async_fifo #(
 endmodule
 
 
-// --- pyc_cdc_sync.v
+// --- PYC_CDC_SYNC.v
 // CDC synchronizer (prototype).
 //
 // This is a simple multi-stage flop pipeline in the destination clock domain.
 // It is suitable for single-bit control signals. For multi-bit buses, prefer a
 // proper CDC protocol (async FIFO, handshake, etc).
-module pyc_cdc_sync #(
+module PYC_CDC_SYNC #(
   parameter WIDTH = 1,
   parameter STAGES = 2
 ) (
@@ -626,7 +626,7 @@ module pyc_cdc_sync #(
   `ifndef SYNTHESIS
   initial begin
     if (STAGES < 1) begin
-      $display("ERROR: pyc_cdc_sync STAGES must be >= 1");
+      $display("ERROR: PYC_CDC_SYNC STAGES must be >= 1");
       $finish;
     end
   end
