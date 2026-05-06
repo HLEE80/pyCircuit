@@ -84,15 +84,16 @@ def tb(t: Tb) -> None:
     tb.drive("b", _to_u(pack_s8x8_to_laneword([-1, -1, -1, -1, -1, -1, -1, -1]), 80))
     tb.drive("b1", 0)
 
-    # drain and check outputs on target cycles.
+    # CycleAwareTb observes outputs after the active edge, so these checkpoints
+    # are one display-cycle earlier than the input-cycle + L notation.
     for _ in range(20):
         tb.next()
         tb.drive("vld", 0)
-        if tb.cycle == 5:
+        if tb.cycle == 4:
             tb.expect("vld_out", 1)
             tb.expect("out0", _to_u(exp2b.out0_19, 19))
             tb.expect("out1", _to_u(exp2b.out1_16, 16))
-        if tb.cycle == 6:
+        if tb.cycle == 5:
             tb.expect("vld_out", 1)
             tb.expect("out0", _to_u(exp2a.out0_19, 19))
 

@@ -4,6 +4,7 @@ from typing import Sequence
 
 from pycircuit import cas, cat, mux, wire_of
 
+from .constants import OUT0_W, OUT1_W
 from .decode import zext
 
 
@@ -101,6 +102,20 @@ def wallace_dot8_tree(m, domain, *, inputs: dict | None = None, width: int = RED
 wallace_dot8_tree.__pycircuit_name__ = "PE_INT_WALLACE_DOT8_TREE"
 
 
+def wallace_dot8_tree_w19(m, domain, *, inputs: dict | None = None, prefix: str = "wallace_dot8_w19"):
+    return wallace_dot8_tree(m, domain, inputs=inputs, width=OUT0_W, prefix=prefix)
+
+
+wallace_dot8_tree_w19.__pycircuit_name__ = "PE_INT_WALLACE_DOT8_TREE_W19"
+
+
+def wallace_dot8_tree_w16(m, domain, *, inputs: dict | None = None, prefix: str = "wallace_dot8_w16"):
+    return wallace_dot8_tree(m, domain, inputs=inputs, width=OUT1_W, prefix=prefix)
+
+
+wallace_dot8_tree_w16.__pycircuit_name__ = "PE_INT_WALLACE_DOT8_TREE_W16"
+
+
 def dot8_reduce(products: Sequence[object]):
     return _wallace_dot8_reduce(products)
 
@@ -124,12 +139,11 @@ def shift_scale_x1_x2_x4(value, shift2b):
     )
 
 
-def select_one_hot4(sel0, sel1, sel2, sel3, cand0, cand1, cand2, cand3):
+def select_one_hot4(sel0, sel1, sel2, cand0, cand1, cand2, cand3):
     """
     One-hot mode selection. Use muxes instead of boolean-masked
     multiplication so PyCircuit does not insert balancing registers in comb3.
     """
-    _ = sel3
     return wire_of(sel0)._select_internal(
         wire_of(cand0),
         wire_of(sel1)._select_internal(
@@ -139,9 +153,11 @@ def select_one_hot4(sel0, sel1, sel2, sel3, cand0, cand1, cand2, cand3):
     )
 
 
-def sum_shift_pair(lo, hi, e1_a, e1_b):
+def sum_shift_pair(lo, hi, e1_a, e1_b, *, width: int = REDUCE_W):
     e1_a_w = wire_of(e1_a)
     e1_b_w = wire_of(e1_b)
     sh_lo = zext(e1_a_w[0:1], 2) + zext(e1_b_w[0:1], 2)
     sh_hi = zext(e1_a_w[1:2], 2) + zext(e1_b_w[1:2], 2)
-    return shift_scale_x1_x2_x4(lo, sh_lo) + shift_scale_x1_x2_x4(hi, sh_hi)
+    lo_scaled = wire_of(shift_scale_x1_x2_x4(wire_of(lo)[0:width], sh_lo))[0:width]
+    hi_scaled = wire_of(shift_scale_x1_x2_x4(wire_of(hi)[0:width], sh_hi))[0:width]
+    return lo_scaled + hi_scaled

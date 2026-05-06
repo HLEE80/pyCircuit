@@ -4,6 +4,11 @@ obj_dir/
 sim/logs/
 sim/waves/
 
+# Deliverable RTL snapshots are generated but intentionally versioned.
+!rtl/
+!rtl/build/
+!rtl/build/*.v
+
 # Simulation artifacts
 *.vcd
 *.fst

@@ -19,6 +19,12 @@ _DELIVERABLE_MODULE_RENAMES = {
     "pyc_cdc_sync": "PYC_CDC_SYNC",
 }
 
+_PURE_COMB_MODULES_WITH_FORCED_CLOCK_RESET = (
+    "PE_INT_WALLACE_DOT8_TREE",
+    "PE_INT_WALLACE_DOT8_TREE_W16",
+    "PE_INT_WALLACE_DOT8_TREE_W19",
+)
+
 
 def _normalize_module_identifier_case(verilog_text: str) -> str:
     """Use uppercase module identifiers in deliverable RTL while keeping net names intact."""
@@ -132,6 +138,30 @@ def _insert_internal_reset_wire(top_text: str, module_name: str = "PE_INT") -> s
     return top_text[:insert_idx] + reset_decl + top_text[insert_idx:]
 
 
+def _drop_pure_comb_clock_reset_ports(verilog_text: str, module_name: str) -> str:
+    """Remove forced hierarchy clk/rst ports from known pure combinational modules."""
+    if re.search(rf"\bmodule\s+{re.escape(module_name)}\b", verilog_text):
+        verilog_text = re.sub(
+            r"^\s*input\s+clk,\s*\n\s*input\s+rst,\s*\n",
+            "",
+            verilog_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+    instance_re = re.compile(
+        rf"(\b{re.escape(module_name)}\s+\w+\s*\(\n)(.*?)(\n\);)",
+        flags=re.DOTALL,
+    )
+
+    def strip_instance_ports(match: re.Match[str]) -> str:
+        body = re.sub(r"^\s*\.clk\(clk\),\s*\n", "", match.group(2), flags=re.MULTILINE)
+        body = re.sub(r"^\s*\.rst\(rst\),\s*\n", "", body, flags=re.MULTILINE)
+        return match.group(1) + body + match.group(3)
+
+    return instance_re.sub(strip_instance_ports, verilog_text)
+
+
 def _load_current_design_name(repo_root: Path) -> str:
     py_dir = repo_root / "python"
     if str(py_dir) not in sys.path:
@@ -172,6 +202,8 @@ def _sync_generated_rtl(repo_root: Path, out_dir: Path, design_name: str) -> Non
     if re.search(r"^\s*input\s+rst,\s*$", top_text, flags=re.MULTILINE):
         top_text = re.sub(r"^\s*input\s+rst,\s*$\n?", "", top_text, count=1, flags=re.MULTILINE)
         top_text = _insert_internal_reset_wire(top_text)
+    for module_name in _PURE_COMB_MODULES_WITH_FORCED_CLOCK_RESET:
+        top_text = _drop_pure_comb_clock_reset_ports(top_text, module_name)
 
     dst_top.write_text(_normalize_module_identifier_case(top_text), encoding="utf-8")
     primitives_text = primitives_verilog.read_text(encoding="utf-8")
@@ -186,6 +218,9 @@ def _sync_generated_rtl(repo_root: Path, out_dir: Path, design_name: str) -> Non
             continue
         dst_module = rtl_dir / f"{module_dir.name.lower()}.v"
         module_text = module_verilog.read_text(encoding="utf-8")
+        if module_dir.name in _PURE_COMB_MODULES_WITH_FORCED_CLOCK_RESET:
+            module_text = _drop_pure_comb_clock_reset_ports(module_text, "PE_INT_WALLACE_DOT8_TREE")
+            module_text = _drop_pure_comb_clock_reset_ports(module_text, module_dir.name)
         dst_module.write_text(_normalize_module_identifier_case(module_text), encoding="utf-8")
         dst_submodules.append(dst_module)
 

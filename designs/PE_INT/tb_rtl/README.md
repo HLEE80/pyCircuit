@@ -44,7 +44,7 @@ export PE_INT="$(pwd)"
 sed "s|\$PE_INT|${PE_INT}|g" filelist/pe_int.f > build/.pe_int.resolved.f
 sed "s|\$PE_INT|${PE_INT}|g" tb_rtl/tb.f > build/.tb.resolved.f
 verilator --binary --timing -Wall \
-  -Wno-DECLFILENAME -Wno-TIMESCALEMOD -Wno-UNUSEDSIGNAL -Wno-BLKSEQ \
+  -Wno-DECLFILENAME -Wno-TIMESCALEMOD -Wno-BLKSEQ \
   -f build/.pe_int.resolved.f -f build/.tb.resolved.f \
   --top-module tc_mode2b_sanity -o tc_mode2b_sanity
 ./obj_dir/tc_mode2b_sanity

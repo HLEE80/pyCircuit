@@ -3,13 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
-    from pycircuit import CycleAwareCircuit, CycleAwareDomain, cas, compile_cycle_aware, mux, wire_of
+    from pycircuit import CycleAwareCircuit, CycleAwareDomain, cas, compile_cycle_aware, wire_of
 except ImportError:  # pragma: no cover - allows local tests without pyCircuit.
     CycleAwareCircuit = object  # type: ignore[assignment]
     CycleAwareDomain = object  # type: ignore[assignment]
     cas = None  # type: ignore[assignment]
     compile_cycle_aware = None  # type: ignore[assignment]
-    mux = None  # type: ignore[assignment]
     wire_of = None  # type: ignore[assignment]
 
 from .constants import DEFAULT_PIPELINE_L, OUT0_W, OUT1_W, SPEC_LATENCY_L
@@ -17,7 +16,7 @@ from .mac_modes import comb1_generate_products, comb2_reduce_products, comb3_mod
 
 
 def _require_pycircuit() -> None:
-    if cas is None or compile_cycle_aware is None or wire_of is None or mux is None:
+    if cas is None or compile_cycle_aware is None or wire_of is None:
         raise RuntimeError(
             "pyCircuit is not installed. Please set PYTHONPATH according to README, "
             "or install LinxISA/pyCircuit frontend."
@@ -62,7 +61,6 @@ def build(
     c0_is_2a = in_mode == 0
     c0_is_2b = in_mode == 1
     c0_is_2c = in_mode == 2
-    c0_is_2d = in_mode == 3
 
     # reg0: input capture boundary (cycle-aware sampled transaction).
     domain.next()
@@ -70,7 +68,6 @@ def build(
     s0_is_2a = _reg_sig(domain, c0_is_2a, "pe_int_s0_is_2a")
     s0_is_2b = _reg_sig(domain, c0_is_2b, "pe_int_s0_is_2b")
     s0_is_2c = _reg_sig(domain, c0_is_2c, "pe_int_s0_is_2c")
-    s0_is_2d = _reg_sig(domain, c0_is_2d, "pe_int_s0_is_2d")
     s0_a = _reg_sig(domain, in_a, "pe_int_s0_a")
     s0_b = _reg_sig(domain, in_b, "pe_int_s0_b")
     s0_b1 = _reg_sig(domain, in_b1, "pe_int_s0_b1")
@@ -87,7 +84,6 @@ def build(
     s1_is_2a = _reg_sig(domain, s0_is_2a, "pe_int_s1_is_2a")
     s1_is_2b = _reg_sig(domain, s0_is_2b, "pe_int_s1_is_2b")
     s1_is_2c = _reg_sig(domain, s0_is_2c, "pe_int_s1_is_2c")
-    s1_is_2d = _reg_sig(domain, s0_is_2d, "pe_int_s1_is_2d")
     s1_e1_a = _reg_sig(domain, s0_e1_a, "pe_int_s1_e1_a")
     s1_e1_b0 = _reg_sig(domain, s0_e1_b0, "pe_int_s1_e1_b0")
     s1_e1_b1 = _reg_sig(domain, s0_e1_b1, "pe_int_s1_e1_b1")
@@ -110,15 +106,14 @@ def build(
     s2_is_2a = _reg_sig(domain, s1_is_2a, "pe_int_s2_is_2a")
     s2_is_2b = _reg_sig(domain, s1_is_2b, "pe_int_s2_is_2b")
     s2_is_2c = _reg_sig(domain, s1_is_2c, "pe_int_s2_is_2c")
-    s2_is_2d = _reg_sig(domain, s1_is_2d, "pe_int_s2_is_2d")
     s2_e1_a = _reg_sig(domain, s1_e1_a, "pe_int_s2_e1_a")
     s2_e1_b0 = _reg_sig(domain, s1_e1_b0, "pe_int_s2_e1_b0")
     s2_e1_b1 = _reg_sig(domain, s1_e1_b1, "pe_int_s2_e1_b1")
-    s2_s2a = _reg_sig(domain, c2_reduced["s2a"], "pe_int_s2_s2a")
-    s2_s2b0 = _reg_sig(domain, c2_reduced["s2b0"], "pe_int_s2_s2b0")
-    s2_s2b1 = _reg_sig(domain, c2_reduced["s2b1"], "pe_int_s2_s2b1")
-    s2_s2d0 = _reg_sig(domain, c2_reduced["s2d0"], "pe_int_s2_s2d0")
-    s2_s2d1 = _reg_sig(domain, c2_reduced["s2d1"], "pe_int_s2_s2d1")
+    s2_s2a = _reg_sig(domain, wire_of(c2_reduced["s2a"])[0:OUT0_W], "pe_int_s2_s2a")
+    s2_s2b0 = _reg_sig(domain, wire_of(c2_reduced["s2b0"])[0:OUT0_W], "pe_int_s2_s2b0")
+    s2_s2b1 = _reg_sig(domain, wire_of(c2_reduced["s2b1"])[0:OUT1_W], "pe_int_s2_s2b1")
+    s2_s2d0 = _reg_sig(domain, wire_of(c2_reduced["s2d0"])[0:OUT0_W], "pe_int_s2_s2d0")
+    s2_s2d1 = _reg_sig(domain, wire_of(c2_reduced["s2d1"])[0:OUT1_W], "pe_int_s2_s2d1")
     s2_s2c0_lo = _reg_sig(domain, c2_reduced["s2c0_lo"], "pe_int_s2_s2c0_lo")
     s2_s2c0_hi = _reg_sig(domain, c2_reduced["s2c0_hi"], "pe_int_s2_s2c0_hi")
     s2_s2c1_lo = _reg_sig(domain, c2_reduced["s2c1_lo"], "pe_int_s2_s2c1_lo")
@@ -144,18 +139,14 @@ def build(
         is_2a=s2_is_2a,
         is_2b=s2_is_2b,
         is_2c=s2_is_2c,
-        is_2d=s2_is_2d,
     )
-    c3_out0_raw = cas(domain, wire_of(c3_out0_raw), cycle=0)
-    c3_out1_raw = cas(domain, wire_of(c3_out1_raw), cycle=0)
-    c3_out0 = wire_of(c3_out0_raw)[0:OUT0_W]
+    c3_out0 = cas(domain, wire_of(c3_out0_raw)[0:OUT0_W], cycle=0)
     c3_out1 = wire_of(c3_out1_raw)[0:OUT1_W]
 
     # reg3/output commit: vld_out/out0/out1 from the same commit boundary.
     out1 = domain.state(width=OUT1_W, reset_value=0, name="pe_int_out1")
-    out1_commit = mux(
-        wire_of(s2_vld),
-        mux(wire_of(s2_is_2a), wire_of(out1), c3_out1),
+    out1_commit = wire_of(s2_vld)._select_internal(
+        wire_of(s2_is_2a)._select_internal(wire_of(out1), wire_of(c3_out1)),
         wire_of(out1),
     )
     out1.set(out1_commit)
