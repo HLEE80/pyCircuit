@@ -158,6 +158,68 @@ class TestPEIntModel(unittest.TestCase):
             dut.step(rst_n=1, vld=1, mode=MODE_2A, a=a, b=b, b1=b1, e1_a=e1a, e1_b0=e1b0, e1_b1=e1b1)
             self.assertEqual(dut.out1, base_out1)
 
+    def test_mode2a_out1_hold_policy_on_vld_out(self) -> None:
+        dut = PEIntModel()
+        for _ in range(3):
+            dut.step(
+                rst_n=1,
+                vld=0,
+                mode=MODE_2A,
+                a=0,
+                b=0,
+                b1=0,
+                e1_a=(0, 0),
+                e1_b0=(0, 0),
+                e1_b1=(0, 0),
+            )
+
+        tx_modes = [MODE_2B, MODE_2A, MODE_2A, MODE_2D]
+        expected: list[tuple[int, int, int]] = []
+        hold_out1 = 0
+        for mode in tx_modes:
+            a, b, b1, e1a, e1b0, e1b1 = _make_txn(mode)
+            ref = compute_transaction(mode, a, b, b1, e1a, e1b0, e1b1)
+            exp_out1 = hold_out1 if mode == MODE_2A else ref.out1_16
+            expected.append((mode, ref.out0_19, exp_out1))
+            if mode != MODE_2A:
+                hold_out1 = ref.out1_16
+            dut.step(
+                rst_n=1,
+                vld=1,
+                mode=mode,
+                a=a,
+                b=b,
+                b1=b1,
+                e1_a=e1a,
+                e1_b0=e1b0,
+                e1_b1=e1b1,
+            )
+
+        got: list[tuple[int, int, int]] = []
+        for _ in range(DEFAULT_PIPELINE_L + 4):
+            step = dut.step(
+                rst_n=1,
+                vld=0,
+                mode=MODE_2A,
+                a=0,
+                b=0,
+                b1=0,
+                e1_a=(0, 0),
+                e1_b0=(0, 0),
+                e1_b1=(0, 0),
+            )
+            if step.vld_out:
+                mode, exp_out0, exp_out1 = expected[len(got)]
+                got.append((mode, step.out0, step.out1))
+                self.assertEqual(step.out0, exp_out0)
+                self.assertEqual(
+                    step.out1,
+                    exp_out1,
+                    msg=f"mode {mode} committed unexpected out1 hold behavior",
+                )
+
+        self.assertEqual(len(got), len(expected))
+
     def test_async_reset_clears_pipeline(self) -> None:
         dut = PEIntModel()
         # inject a valid sample

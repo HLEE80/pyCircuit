@@ -1,305 +1,400 @@
-# PE_INT Design Spec (DS)
+# PE_INT Design Spec
 
-Version: v0.4  
-Source of truth for function: `docs/spec.md` (baseline v2.0.6)  
-This DS defines low-level circuit structure and stage-level implementation constraints.
+Version: v0.8
+Generated from: `docs/spec.md` baseline v2.0.6
+Generation rule: `.cursor/skills/pe-int-pycircuiteval-flow/SKILL.md`
 
----
-
-## 1. Scope and Design Policy
-
-- Functional behavior, mode semantics, and top-level contract are inherited from `docs/spec.md`.
-- This DS is implementation-oriented and focuses on:
-  - bit-slice decode and lane mapping
-  - arithmetic unit structure
-  - pipeline partition and register boundaries
-  - control/data alignment at output commit points
-- Pipeline partition follows logic-depth guidance:
-  - target per comb stage: around 25 effective logic layers
-  - input pin to first register: <= 8 effective logic layers
-
-### 1.1 Top-Level IO Behavior Contract
-
-| Port | Dir | Width | Behavior Contract |
-|------|-----|-------|-------------------|
-| `clk` | in | 1 | Single clock domain, posedge sequential behavior |
-| `rst_n` | in | 1 | Active-low reset, async assert + sync release |
-| `vld` | in | 1 | Input transaction qualifier, no ready backpressure |
-| `mode` | in | 2 | Per-transaction mode (`2a/2b/2c/2d`) |
-| `a` | in | 80 | Shared packed A bus |
-| `b` | in | 80 | Shared packed B/B0 bus |
-| `b1` | in | 80 | Shared packed B1 bus |
-| `e1_a` | in | 2 | E1 scale bits for A groups (mode `2c`) |
-| `e1_b0` | in | 2 | E1 scale bits for B0 groups (mode `2c`) |
-| `e1_b1` | in | 2 | E1 scale bits for B1 groups (mode `2c`) |
-| `vld_out` | out | 1 | Output valid aligned with committed outputs |
-| `out0` | out | 19 | Registered signed output 0 |
-| `out1` | out | 16 | Registered signed output 1 with mode-2a hold policy |
-
-Hard IO constraints:
-
-- No additional top-level reset port is allowed in deliverable RTL.
-- Pipeline latency and stage count are mode-invariant.
-- In mode `2a`, `out1` must remain stable by hold policy (no unnecessary toggles).
-
-### 1.2 Latency Convention (Normative)
-
-- This DS uses a 0-based latency definition.
-- `t0` is the input sample cycle where one transaction is accepted (`vld=1`).
-- Fixed `L=4` means the corresponding committed output valid is observed at `t0+4`.
-- Latency must be validated by counting real register boundaries on generated RTL paths.
-- Do not infer latency from stage naming (`s0/s1/...`) or comments alone.
+This document is the structure-first design spec derived from `docs/spec.md`.
+It describes low-level circuit contracts, widths, bus routing, pipeline
+boundaries, and protocol timing. Topologies not stated by the source spec are
+first marked as `Unspecified by source spec`. Concrete topology choices may then
+be added in an optimizer-owned section with explicit provenance from an
+independent Circuit Optimizer sub-agent.
 
 ---
 
-## 2. Data Types and Bit-Slice Mapping
+## 1. Scope and Source Boundary
 
-### 2.1 Unified lane container
+`docs/spec.md` defines behavior. This design spec maps that behavior onto
+low-level circuit modules and register boundaries.
 
-- Physical carrier lane width: 5 bits.
-- Lane mapping: `lane[i] = x[5*i+4 : 5*i]`.
+Rules:
 
-Decode rules:
-
-- `S8` (2a/2b/2d A-side and 2a B-side): combine two lanes' `[4:1]`.
-- `S4` (2b B-side): lane `[4:1]`.
-- `S5` (2c and 2d B-side): lane `[4:0]`.
-
-### 2.2 Signed extension rule
-
-- All decoded values are sign-extended before arithmetic.
-- Internal width tracking follows no-loss arithmetic intent, not tool-default truncation.
-
----
-
-## 3. Compute Unit Structure
-
-### 3.1 Multiplier units
-
-All signed multipliers follow the same structural intent:
-
-1. Modified Booth recode
-2. Partial-product select/mux
-3. Compressor tree (3:2 / 4:2 style reduction)
-4. Final carry-propagate adder (prefix-family intent)
-
-Applied widths:
-
-- `M8x8` for mode 2a
-- `M8x4` for mode 2b
-- `M8x5` for mode 2d
-- `M5x5` for mode 2c
-
-### 3.2 Dot-product reduction
-
-- Dot8 reduction for 2a/2b/2d branch sums
-- Dot16 path for 2c split into two Dot8 branches (`lo`, `hi`) before post-scale merge
-
-### 3.3 Post-scale and mode merge
-
-- For mode 2c, `shift = e1_a[k] + e1_bx[k]` (`k=0/1`, shift in `{0,1,2}`)
-- Implement post-scale with bounded shift options (`x1/x2/x4`), not full barrel shifter intent
-- Mode merge uses one-hot controls from registered control metadata
-- Avoid direct `mode == const` comparator chains in late stage merge logic
-
-### 3.4 out1 hold policy
-
-- Update condition: committed transaction valid and `mode != 2a`
-- Otherwise hold previous `out1_hold` value
-- `out1_hold` update control must align with output commit boundary
+1. Business modes (`2a/2b/2c/2d`) share one fixed-latency pipeline.
+2. Circuit modules are described before mode-specific parameter mapping.
+3. Widths use the minimum lossless contract derivable from `docs/spec.md`.
+4. Arbitrary operand or result margin widths are forbidden.
+5. Any topology not stated by `docs/spec.md` remains `Unspecified by source
+   spec` in source-derived sections.
+6. Optimizer-selected topologies are design decisions, not source-spec
+   contracts, and must be labeled with sub-agent provenance, pass number, and
+   objective.
 
 ---
 
-## 4. Depth Probe Baseline
+## 2. Top-Level Module Contract
 
-Reference probes are generated by:
+| Port | Dir | Width | Signed | Circuit Contract |
+|------|-----|-------|--------|------------------|
+| `clk` | in | 1 | no | Single clock domain |
+| `rst_n` | in | 1 | no | Active-low reset intent |
+| `vld` | in | 1 | no | Input transaction qualifier |
+| `mode` | in | 2 | no | Per-transaction mode selector |
+| `a` | in | 80 | packed | Shared A input bus |
+| `b` | in | 80 | packed | Shared B/B0 input bus |
+| `b1` | in | 80 | packed | B1 input bus for mode 2c |
+| `e1_a` | in | 2 | no | Mode 2c A group scale bits |
+| `e1_b0` | in | 2 | no | Mode 2c B0 group scale bits |
+| `e1_b1` | in | 2 | no | Mode 2c B1 group scale bits |
+| `vld_out` | out | 1 | no | Registered output valid |
+| `out0` | out | 19 | yes | Registered output 0 |
+| `out1` | out | 16 | yes | Registered output 1 |
 
-- `model/depth_probe_units.py`
-- `model/estimate_logic_depth.py`
+Reset and flow control:
 
-Measured structural estimates (effective layers):
-
-- `booth_mul_8x8`: 19
-- `booth_mul_8x5`: 19
-- `booth_mul_8x4`: 19
-- `booth_mul_5x5`: 19
-- `dot8_reduce_16b`: 17
-- `dot8_reduce_12b`: 15
-- `dot8_reduce_10b`: 15
-- `dot16_split8_post_scale_14b`: 11
-
-Stage planning notes:
-
-- `comb1` estimate: ~19
-- `comb2` estimate: ~17
-- `comb3` estimate: ~14
-
-Logic-depth decision guidance:
-
-- `<= 25`: within target
-- `26..30`: acceptable guideline overflow; warn user and suggest optional repartition
-- `> 30`: strong risk; propose repartition or structural optimization
+- `rst_n` is the only top-level reset port required by the source spec.
+- `out0`, `out1`, and `vld_out` are registered outputs.
+- There is no `ready` signal and no backpressure interface.
+- A new transaction is sampled only when `vld=1`.
+- Independent FIFO/queue structures are forbidden.
 
 ---
 
-## 5. Pipeline Micro-Architecture (Normative)
+## 3. Bus Decode and DEMUX
 
-Top-level auditable chain:
+### 3.1 Physical Lane Container
+
+Each 80-bit bus contains 16 physical 5-bit lanes:
+
+`lane[i] = bus[5*i+4 : 5*i]`, for `i=0..15`.
+
+### 3.2 Decode Components
+
+| Component | Input Slice | Output Width | Signed | Used By |
+|-----------|-------------|--------------|--------|---------|
+| `DEC_S8` | two adjacent lane nibbles `[4:1]` | 8 | yes | S8 operands |
+| `DEC_S4` | one lane nibble `[4:1]` | 4 | yes | S4 operands |
+| `DEC_S5` | one full lane `[4:0]` | 5 | yes | S5 operands |
+
+Decode outputs are natural-width signed operands. They are not widened to
+top-level output width before multiplication.
+
+### 3.3 Mode to Bus Mapping
+
+| Mode | A Path | B/B0 Path | B1 Path |
+|------|--------|-----------|---------|
+| 2a | `8 x DEC_S8(a)` | `8 x DEC_S8(b)` | unused |
+| 2b | `8 x DEC_S8(a)` | `B0=8 x DEC_S4(b[39:0])`, `B1=8 x DEC_S4(b[79:40])` | unused |
+| 2c | `16 x DEC_S5(a)` | `16 x DEC_S5(b)` | `16 x DEC_S5(b1)` |
+| 2d | `8 x DEC_S8(a)` | `B0=8 x DEC_S5(b[39:0])`, `B1=8 x DEC_S5(b[79:40])` | unused |
+
+Mode DEMUX:
+
+- The mode field selects output branch results at the aligned merge stage.
+- All in-flight transactions preserve FIFO order.
+
+---
+
+## 4. Low-Level Circuit Components
+
+### 4.1 Signed Multiplier
+
+The source spec defines signed operand types. Therefore multiplier input widths
+are natural operand widths, and product widths are exact signed product widths.
+
+| Product | Operand A | Operand B | Product Width | Signed |
+|---------|-----------|-----------|---------------|--------|
+| `P2A` | S8 | S8 | 16 | yes |
+| `P2B0` | S8 | S4 | 12 | yes |
+| `P2B1` | S8 | S4 | 12 | yes |
+| `P2C0` | S5 | S5 | 10 | yes |
+| `P2C1` | S5 | S5 | 10 | yes |
+| `P2D0` | S8 | S5 | 13 | yes |
+| `P2D1` | S8 | S5 | 13 | yes |
+
+Rules:
+
+- Do not implement `S8*S8`, `S8*S4`, `S8*S5`, or `S5*S5` by first extending
+  operands to `out0` or `out1` width.
+- The signed product is extended only when entering a wider reduction path.
+- Multiplier topology: `Unspecified by source spec`.
+
+### 4.2 Reduction
+
+Reduction sums signed products in Dot8 groups.
+
+| Reduction Path | Inputs | Input Width at Reduction | Output Width |
+|----------------|--------|--------------------------|--------------|
+| 2a out0 | 8 x `P2A` | sign-extend product to 19 | 19 signed |
+| 2b out0 | 8 x `P2B0` | sign-extend product to 19 | 19 signed |
+| 2b out1 | 8 x `P2B1` | sign-extend product to 16 | 16 signed |
+| 2c out0 low/high | 8 x `P2C0` per group | sign-extend product to 19 | 19 signed partial |
+| 2c out1 low/high | 8 x `P2C1` per group | sign-extend product to 16 | 16 signed partial |
+| 2d out0 | 8 x `P2D0` | sign-extend product to 19 | 19 signed |
+| 2d out1 | 8 x `P2D1` | sign-extend product to 16 | 16 signed |
+
+Topology:
+
+- Compressor tree topology: `Unspecified by source spec`.
+- Adder tree topology: `Unspecified by source spec`.
+- Final carry-propagate adder topology: `Unspecified by source spec`.
+
+### 4.3 Mode 2c Shifter
+
+Mode 2c group scaling:
+
+- `shift_lo = e1_a[0] + e1_bx[0]`
+- `shift_hi = e1_a[1] + e1_bx[1]`
+- legal shift values are `0`, `1`, and `2`
+
+The circuit needs only bounded x1/x2/x4 scaling. Exact shifter topology is
+`Unspecified by source spec`.
+
+### 4.4 MUX / DEMUX
+
+Mode selection routes reduced branch results to output candidates:
+
+- `out0` candidates: 2a, 2b0, 2c0, 2d0
+- `out1` candidates: 2b1, 2c1, 2d1, plus the mode-2a stability policy
+
+Exact mux-tree topology is `Unspecified by source spec`.
+
+### 4.5 Registers / D Flip-Flops
+
+Required state:
+
+- Input capture registers.
+- Pipeline registers to maintain fixed mode-invariant latency.
+- Registered `vld_out`, `out0`, and `out1`.
+- `out1` hold state or an equivalent documented stable-constant policy for
+  mode 2a.
+
+All modes traverse the same number of real register boundaries.
+
+---
+
+## 5. Pipeline Contract
+
+The flow requires an auditable full pipeline:
 
 `input -> comb0 -> reg0 -> comb1 -> reg1 -> comb2 -> reg2 -> comb3 -> reg3/output`
 
-This partition is the DS baseline because it keeps each major comb stage near target guidance.
+Latency:
 
-### 5.1 `comb0` (input-side prelogic)
+- Fixed `L=4`.
+- 0-based convention: a transaction sampled at `t0` produces committed output at
+  `t0+4`.
+- `vld_out`, `out0`, and `out1` update at the same output register boundary.
 
-Responsibilities:
+Input prelogic:
 
-- mode predecode and control fanout preparation
-- input lane-wiring preparation
-- valid/control preconditioning for stage entry
+- Effective logic depth from input pins to the first register is `<= 8` layers.
 
-Constraint:
+Stage logic:
 
-- input pin to `reg0`: <= 8 layers
-
-### 5.2 `reg0` (input capture)
-
-Capture one transaction payload:
-
-- `vld, mode, a, b, b1, e1_a, e1_b0, e1_b1`
-
-### 5.3 `comb1` (product generation)
-
-Datapath:
-
-- lane decode (`S8/S4/S5`)
-- per-lane multiply generation for all mode branches
-
-Control-path:
-
-- one-hot mode controls and aligned branch-control metadata preparation
-
-### 5.4 `reg1` (post-product boundary)
-
-- register `comb1` outputs and aligned control metadata
-
-### 5.5 `comb2` (dot reduction)
-
-Datapath:
-
-- dot8 reductions for 2a/2b/2d
-- split dot16 partial reductions for 2c (`lo`, `hi`)
-
-Control-path:
-
-- propagate aligned transaction controls in parallel
-
-### 5.6 `reg2` (post-reduction boundary)
-
-- register reduction outputs and aligned controls
-
-### 5.7 `comb3` (post-scale + mode merge)
-
-Datapath:
-
-- 2c post-scale and `lo/hi` merge
-- final mode-select merge to `out0_raw` and `out1_raw`
-
-Control-path:
-
-- derive aligned output-commit control metadata
-
-Hard constraints:
-
-- `comb3` must be pure combinational logic (no state update)
-- mode merge select controls come from registered one-hot metadata
-- do not build independent side control chain that can drift from data order
-
-### 5.8 `reg3/output` (final output commit stage)
-
-- commit `vld_out`, `out0`, `out1` from the same transaction boundary
-- this stage is mandatory for fixed `L=4` under 0-based definition
-
-Normative commit intent:
-
-- `out0_commit = out0_raw_aligned`
-- `out1_commit = (vld_commit && out1_en_commit) ? out1_raw_aligned : out1_hold`
-- `if (vld_commit) out1_hold <= out1_commit`
-
-Hard constraints:
-
-- no extra policy state on `out0`
-- `out1_hold` update point must align with commit control point
-- no cross-stage mixing of control and committed data
+- Main target for each pipeline stage is around 25 effective logic layers.
+- Exact topology choices remain source-bound in Section 4 and optimizer-owned
+  in Section 10.
 
 ---
 
-## 6. Mode-Specific Datapath Mapping
+## 6. Business Mode Mapping to Circuit Parameters
 
-### 6.1 Mode 2a (`mode=00`)
-
-- Decode `A_i: S8`, `B_i: S8` for 8 lanes
-- `P_i = A_i * B_i`
-- `out0 = sum_{i=0..7}(P_i)` sliced/extended to 19-bit contract
-- `out1` follows hold policy
-
-### 6.2 Mode 2b (`mode=01`)
-
-- `A_i: S8`
-- `B0_i: S4` from `b[39:0]`, `B1_i: S4` from `b[79:40]`
-- `out0 = sum(A_i * B0_i)`
-- `out1 = sum(A_i * B1_i)`
-
-### 6.3 Mode 2d (`mode=11`)
-
-- Same dual-branch flow as mode 2b, with `B0/B1` as `S5`
-
-### 6.4 Mode 2c (`mode=10`)
-
-- 16-lane `S5` datapath for `A/B0/B1`
-- Branch 0:
-  - `LO0 = sum_{i=0..7}(A_i * B0_i)`
-  - `HI0 = sum_{i=8..15}(A_i * B0_i)`
-  - `SUM0 = (LO0 << (e1_a[0]+e1_b0[0])) + (HI0 << (e1_a[1]+e1_b0[1]))`
-- Branch 1 uses `B1/e1_b1` with the same structure
+| Mode | Multiplier Parameters | Reduction Parameters | Post-Scale | Output Rule |
+|------|-----------------------|----------------------|------------|-------------|
+| 2a | 8 x S8*S8 -> P16 | sign-extend P16 to 19, sum 8 | none | `out0=sum`, `out1` stable |
+| 2b | 8 x S8*S4 -> P12 per path | B0: sign-extend to 19; B1: sign-extend to 16 | none | dual output |
+| 2c | 16 x S5*S5 -> P10 per path | split low/high Dot8 groups | x1/x2/x4 per group | dual output |
+| 2d | 8 x S8*S5 -> P13 per path | B0: sign-extend to 19; B1: sign-extend to 16 | none | dual output |
 
 ---
 
-## 7. Control Path Contract
+## 7. Flow Control and FSM
 
-- one input `vld=1` transaction maps to one output `vld_out=1` transaction
-- no FIFO/reorder semantics in datapath
-- back-to-back mode switching is allowed
-- transaction order must remain FIFO at output
-- control and data must stay aligned at each register boundary
+There is no multi-state controller FSM implied by `docs/spec.md`.
 
----
+Valid behavior:
 
-## 8. Verification Hooks
+- `vld=1` samples one input transaction.
+- `vld=0` samples no new transaction.
+- Back-to-back `vld=1` with mode changes is allowed.
+- Transaction ordering remains FIFO at output.
+- Under sustained valid traffic after pipeline fill, no output bubbles are
+  allowed.
 
-Mandatory checks:
+Mode 2a `out1` behavior:
 
-1. **Contract consistency**  
-   - `spec` and `DS` share same latency semantics (0-based, `t0 -> t0+L`)
-2. **Stage audit**  
-   - reviewer can identify `comb0/reg0 -> comb1/reg1 -> comb2/reg2 -> comb3/reg3/output`
-3. **Real-path register count (generated RTL)**  
-   - control path `vld -> vld_out` is exactly `L=4`  
-   - committed data paths to `out0/out1` align with same transaction boundary
-4. **Commit-point alignment**  
-   - qualifier and outputs come from same commit stage  
-   - `out1_hold` update aligns with commit control
-5. **Logic-depth recording**  
-   - record per-stage estimates and classify by decision guidance (`<=25`, `26..30`, `>30`)
-6. **Regression and ordering**  
-   - regression passes  
-   - no bubble under sustained valid traffic after fill  
-   - no reorder under alternating mode pairs (for example `2b -> 2a`)
+- `out1` is mathematically don't-care in mode 2a.
+- The circuit must avoid unnecessary toggles by holding the previous value or by
+  using a documented stable constant.
 
 ---
 
-## 9. Notes
+## 8. Typical Waveforms
 
-- This DS is low-level and structure-first.
-- If arithmetic topology changes, rerun depth estimation and update Section 4.
-- If stage partition changes, re-validate latency and commit alignment using generated RTL real-path counts.
+### 8.1 Single Transaction Latency
+
+```text
+cycle      t0    t1    t2    t3    t4
+vld        1     0     0     0     0
+mode/data  M0    x     x     x     x
+vld_out    0     0     0     0     1
+out0/out1  hold  hold  hold  hold  result(M0)
+```
+
+### 8.2 Back-to-Back Mode Switch
+
+```text
+cycle      t0    t1    t2    t3    t4    t5
+vld        1     1     0     0     0     0
+mode       2b    2a    x     x     x     x
+vld_out    0     0     0     0     1     1
+out0       hold  hold  hold  hold  2b    2a
+out1       hold  hold  hold  hold  2b    stable/hold
+```
+
+### 8.3 Mode 2c Group Scaling
+
+```text
+LO = sum lanes[0..7]
+HI = sum lanes[8..15]
+SH_LO = e1_a[0] + e1_bx[0]
+SH_HI = e1_a[1] + e1_bx[1]
+OUT = (LO << SH_LO) + (HI << SH_HI)
+```
+
+---
+
+## 9. Source-Limited Structural Items
+
+The following items are intentionally not specified because `docs/spec.md` does
+not define them:
+
+- Booth versus array versus other multiplier topology.
+- Wallace/Dadda/compressor-tree versus adder-tree reduction topology.
+- Carry-lookahead versus prefix versus ripple final adder topology.
+- Exact bounded-shifter topology.
+- Exact mux-tree shape.
+
+If any of these topologies are required for implementation or review, update
+`docs/spec.md`, provide an explicit user-approved structural-policy source, or
+record a Circuit Optimizer decision, then regenerate this design spec.
+
+---
+
+## 10. Circuit Optimizer Pass 0 Topology Proposal
+
+Provenance: `Optimizer-subagent-selected, pass 0`
+
+This section records optimizer-owned topology decisions. These decisions are not
+derived from `docs/spec.md`; they are selected by the independent Circuit
+Optimizer for implementation guidance.
+
+Objective: `balanced`
+
+Priority order:
+
+1. Meet fixed `L=4`.
+2. Keep input-pin to first-register prelogic `<= 8` effective logic layers.
+3. Keep each main pipeline stage near the project target of about 25 effective
+   logic layers.
+4. Then optimize area and power.
+
+Iteration budget:
+
+- Default optimizer budget: pass 0 topology selection before implementation plus
+  2 post-build optimizer iterations after PyCircuit build, generated RTL, and
+  functional regression evidence are available.
+
+### 10.1 Selected Topologies and Current Status
+
+| Block | Selection | Implementation Status | Evidence Pointer | Risk / Next Evidence | Provenance |
+|---|---|---|---|---|---|
+| Pipeline placement | Fixed `input -> comb0 -> reg0 -> comb1 -> reg1 -> comb2 -> reg2 -> comb3 -> reg3/output`, `L=4`. | Implemented | `python/pe_int/top.py::build()`, generated `rtl/build/pe_int.v` register boundaries. | Confirm with RTL regression latency checks. | `Optimizer-subagent-selected, pass 0`; latency from `docs/spec.md`. |
+| Signed multipliers | Natural-width signed products. Radix-4 Booth remains the S8-involved structural optimization intent, but current RTL uses signed shift/add/sub style product generation. | Partially implemented / Deferred | `python/pe_int/lane_mac.py::booth_mul_signed()`, `_mul_signed_twos_complement()`, generated multiplier add/sub chains in `rtl/build/pe_int.v`. | Explicit radix-4 Booth is deferred until synthesis/timing/area evidence justifies the structural rewrite. | `Optimizer-subagent-selected, pass 0`; post-build status audit. |
+| Dot8 reduction | Wallace-style carry-save compression tree using `CMPE42`, `FA`, and `HA`, followed by one final CPA. | Implemented | `python/pe_int/lane_mac.py::_wallace_dot8_reduce()`, `rtl/build/pe_int_wallace_dot8_tree_w16.v`, `rtl/build/pe_int_wallace_dot8_tree_w19.v`. | STA required for real timing depth. | `Optimizer-subagent-selected, pass 0`; pass 1 terminal carry policy retained. |
+| Final CPA | Brent-Kung-style prefix CPA for W16/W19 reductions and mode-2c low/high merge. | Implemented | `python/pe_int/lane_mac.py::brent_kung_cpa_truncated()`, `sum_shift_pair()`, generated prefix-style RTL. | Synthesis may remap; next evidence is mapped timing/netlist. | `Optimizer-subagent-selected, pass 0`; pass 1 mode-2c merge fix. |
+| Mode 2c shifter | Fixed shift-by-0/1/2 using wire shifts plus muxing before final CPA. | Implemented | `python/pe_int/lane_mac.py::shift_scale_x1_x2_x4()`, generated shift/mux RTL in `rtl/build/pe_int.v`. | Check comb3 timing with STA. | `Optimizer-subagent-selected, pass 0`. |
+| Mode output MUX | Balanced staged 2:1 mux tree using pipelined mode decode. | Implemented | `python/pe_int/lane_mac.py::select_one_hot4()`, `python/pe_int/mac_modes.py::comb3_mode_merge()`, generated mux tree in `rtl/build/pe_int.v`. | Mapped timing/power evidence still pending. | `Optimizer-subagent-selected, pass 0`. |
+| Mode 2a `out1` stable policy | Hold previous registered `out1` on valid mode-2a commit. | Implemented | `python/pe_int/top.py` output commit logic, generated `pe_int_out1` feedback register/mux, and model protocol coverage in `model/test_pe_int.py::test_mode2a_out1_hold_policy_on_vld_out`. | Keep RTL regression for mode switching and mode-2a stability. | `Optimizer-subagent-selected, pass 0`; stability requirement from `docs/spec.md`. |
+
+### 10.2 Pipeline Placement Intent
+
+Use the fixed latency shape:
+
+`input -> comb0 -> reg0 -> comb1 -> reg1 -> comb2 -> reg2 -> comb3 -> reg3/output`
+
+Pass 0 placement:
+
+| Region | Intended Work |
+|---|---|
+| `comb0` | Lane slicing, sign decode, mode one-hot/predecode, mode-2c shift-select decode. Must remain `<= 8` effective layers from input pins to `reg0`. |
+| `comb1` | Multiplier partial-product generation and local small reduction for natural-width products. |
+| `comb2` | Dot8 Wallace compression to final two-vector carry-save form. For mode 2c, also perform bounded shift wiring/muxing and low/high carry-save merge where practical. |
+| `comb3` | Brent-Kung final CPA, sign extension to top-level width, balanced output mux, and output-register commit/hold policy. |
+
+### 10.3 Wallace Dot8 Cell-Level Contract
+
+The selected Dot8 reduction is a Wallace-style carry-save compression tree, not
+a serial `+` operator tree.
+
+Allowed cells:
+
+| Cell | Pins | Bit-Weight Contract |
+|---|---|---|
+| `CMPE42[k]` | Inputs: `x0`, `x1`, `x2`, `x3`, `Cix`. Outputs: `sum`, `carry`, `Cox`. | `x0..x3` and `Cix` have weight `2^k`. `sum` has weight `2^k`. `carry` has weight `2^(k+1)`. `Cox` has weight `2^(k+1)` and may feed the next higher column peer cell's `Cix`. |
+| `FA[k]` | Inputs: `x0`, `x1`, `x2`. Outputs: `sum`, `carry`. | Inputs and `sum` have weight `2^k`; `carry` has weight `2^(k+1)`. |
+| `HA[k]` | Inputs: `x0`, `x1`. Outputs: `sum`, `carry`. | Inputs and `sum` have weight `2^k`; `carry` has weight `2^(k+1)`. |
+
+Chaining policy:
+
+- Within one compression layer, `CMPE42[k].Cox` may feed `CMPE42[k+1].Cix`.
+- The least-significant column chain input is tied to zero.
+- The most-significant `Cox` is preserved as a residual next-weight bit; it
+  must not be dropped.
+- `FA` and `HA` carries are forwarded to the next higher bit column in the next
+  compression layer.
+
+Residual-column handling:
+
+- Use `CMPE42` where column height and adjacent-chain availability make it
+  useful.
+- Use `FA` for residual triples.
+- Use `HA` only when it reduces the next layer's maximum height or is needed for
+  termination.
+- One or two remaining bits in a column may pass through unchanged.
+
+Termination:
+
+- Compression stops when every bit column has at most two remaining bits.
+- The remaining bits form two aligned carry-save vectors.
+- The final carry-propagate boundary is the selected Brent-Kung CPA.
+- For fixed-width reducer outputs (`W=19` for `out0` paths, `W=16` for `out1`
+  paths), any carry bit with weight `2^W` is outside the source-spec output
+  width contract and is intentionally truncated at the fixed-width final CPA
+  boundary. This is an explicit fixed-width arithmetic policy, not a silent
+  implementation drop.
+- For mode 2c, low/high Dot8 carry-save vectors should be shifted and merged in
+  carry-save form before the final CPA when possible, so the path uses one final
+  CPA rather than per-group CPAs plus another adder.
+
+### 10.4 Post-Build Evidence Required
+
+After PyCircuit coding, `pycc` RTL generation, and functional regression,
+collect:
+
+1. Generated RTL hierarchy and whether multiplier/reduction structure matches
+   this pass 0 topology.
+2. Evidence that Dot8 reductions are compressor trees, not generic serial `+`
+   chains.
+3. Register-boundary count for `out0`, `out1`, and `vld_out`; confirm fixed
+   `L=4`.
+4. Input-pin to first-register logic cone estimate; confirm `<= 8`.
+5. Per-stage logic-depth estimate, especially multiplier stage and final CPA/mux
+   stage.
+6. Width audit for product, sign extension, shift, carry-save vectors, final
+   CPA, and top-level outputs.
+7. Mux-depth audit for mode output selection and mode-2a `out1` hold.
+8. Functional regression results for all modes and back-to-back mode switching.
+9. Synthesis timing/area/power reports when available; otherwise use RTL proxy
+   metrics only.

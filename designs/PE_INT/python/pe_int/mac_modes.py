@@ -3,7 +3,7 @@ from __future__ import annotations
 from pycircuit import wire_of
 
 from .constants import OUT0_W, OUT1_W
-from .decode import decode_s4_from_40, decode_s4_hi_from_80, decode_s5, decode_s5_hi_from_80, decode_s8_from_lane_word
+from .decode import decode_s4_from_40, decode_s4_hi_from_80, decode_s5, decode_s5_hi_from_80, decode_s8_from_lane_word, sext
 from .lane_mac import booth_mul_signed, select_one_hot4, sum_shift_pair, wallace_dot8_tree_w16, wallace_dot8_tree_w19
 
 
@@ -32,26 +32,25 @@ def comb1_generate_products(a, b, b1):
     p2c1 = []
 
     for lane_idx in range(8):
-        a8_o0_i = decode_s8_from_lane_word(a, lane_idx, bits=OUT0_W)
-        a8_o1_i = decode_s8_from_lane_word(a, lane_idx, bits=OUT1_W)
-        b8_i = decode_s8_from_lane_word(b, lane_idx, bits=OUT0_W)
-        b4_0_i = decode_s4_from_40(b_lo40, lane_idx, bits=OUT0_W)
-        b4_1_i = decode_s4_hi_from_80(b, lane_idx, bits=OUT1_W)
-        b5_0_i = decode_s5(b_lo40, lane_idx, bits=OUT0_W)
-        b5_1_i = decode_s5_hi_from_80(b, lane_idx, bits=OUT1_W)
-        p2a.append(booth_mul_signed(a8_o0_i, b8_i))
-        p2b0.append(booth_mul_signed(a8_o0_i, b4_0_i))
-        p2b1.append(booth_mul_signed(a8_o1_i, b4_1_i))
-        p2d0.append(booth_mul_signed(a8_o0_i, b5_0_i))
-        p2d1.append(booth_mul_signed(a8_o1_i, b5_1_i))
+        a8_i = decode_s8_from_lane_word(a, lane_idx, bits=8)
+        b8_i = decode_s8_from_lane_word(b, lane_idx, bits=8)
+        b4_0_i = decode_s4_from_40(b_lo40, lane_idx, bits=4)
+        b4_1_i = decode_s4_hi_from_80(b, lane_idx, bits=4)
+        b5_0_i = decode_s5(b_lo40, lane_idx, bits=5)
+        b5_1_i = decode_s5_hi_from_80(b, lane_idx, bits=5)
+        p2a.append(booth_mul_signed(a8_i, b8_i))
+        p2b0.append(booth_mul_signed(a8_i, b4_0_i))
+        p2b1.append(booth_mul_signed(a8_i, b4_1_i))
+        p2d0.append(booth_mul_signed(a8_i, b5_0_i))
+        p2d1.append(booth_mul_signed(a8_i, b5_1_i))
 
     for lane_idx in range(16):
-        a5_o0_i = decode_s5(a, lane_idx, bits=OUT0_W)
-        a5_o1_i = decode_s5(a, lane_idx, bits=OUT1_W)
-        b0_5_i = decode_s5(b, lane_idx, bits=OUT0_W)
-        b1_5_i = decode_s5(b1, lane_idx, bits=OUT1_W)
-        p2c0.append(booth_mul_signed(a5_o0_i, b0_5_i))
-        p2c1.append(booth_mul_signed(a5_o1_i, b1_5_i))
+        # Keep mode-2c multipliers at natural operand width (S5*S5 -> 10).
+        a5_i = decode_s5(a, lane_idx, bits=5)
+        b0_5_i = decode_s5(b, lane_idx, bits=5)
+        b1_5_i = decode_s5(b1, lane_idx, bits=5)
+        p2c0.append(booth_mul_signed(a5_i, b0_5_i))
+        p2c1.append(booth_mul_signed(a5_i, b1_5_i))
 
     return {
         "p2a": p2a,
@@ -68,7 +67,7 @@ def _wallace_dot8(domain, products, *, width: int, prefix: str):
     module = wallace_dot8_tree_w19 if width == OUT0_W else wallace_dot8_tree_w16
     return domain.call(
         module,
-        inputs={f"in{idx}": wire_of(product)[0:width] for idx, product in enumerate(products)},
+        inputs={f"in{idx}": sext(product, width) for idx, product in enumerate(products)},
         prefix=prefix,
     )["sum"]
 

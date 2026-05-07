@@ -69,6 +69,37 @@ If area and dynamic power conflict, prioritize dynamic power.
    treat that as a framework limitation to report, not as a normal coding
    pattern to copy.
 
+## Structural Self-Audit Before Closure
+
+After coding and before reporting completion:
+
+1. Compare `docs/design_spec.md` optimizer-selected topology against PyCircuit
+   source and generated RTL.
+2. For each topology item, state one of: `Implemented`,
+   `Partially implemented`, or `Deferred`.
+3. If an item is deferred, update `docs/design_spec.md` and
+   `docs/circuit_optimizer_report.md` with reason, risk, and next evidence.
+4. Do not claim closure by functional PASS alone.
+
+Required checks:
+
+- natural-width product widths
+- multiplier topology and any deferred status
+- Wallace / `CMPE42` / `FA` / `HA` structure
+- terminal carry and truncation policy
+- mode-2c shift/merge topology
+- final CPA topology
+- mode-2a `out1` hold
+- no generic `+` tree where the design spec forbids it
+
+## Known Framework Limitation
+
+The PE_INT flow currently treats configurable generated RTL reset polarity/name
+and reset release handling as a known PyCircuit framework limitation. Do not
+silently change `docs/spec.md` to hide this. Report the limitation and keep
+functional reset behavior tested; dedicated reset synchronizer closure requires
+user-approved framework/spec work.
+
 ## Mandatory Stage Coding Contract
 
 Top-level coding must be explicit:

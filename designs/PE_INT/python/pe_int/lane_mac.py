@@ -13,11 +13,49 @@ REDUCE_W = 32
 
 def booth_mul_signed(lhs, rhs):
     """
-    DS §3.1 multiplier structural policy entry.
-    RTL generation is expected to map this operation into the
-    shared booth+compressor+BK template tracked by depth-probe flow.
+    Current functional signed multiplier entry point.
+
+    Explicit radix-4 Booth remains a documented deferred topology optimization;
+    this implementation keeps natural-width signed shift/add/sub behavior.
     """
-    return lhs * rhs
+    lhs_w = wire_of(lhs)
+    rhs_w = wire_of(rhs)
+    lhs_bits = lhs_w.width
+    rhs_bits = rhs_w.width
+    if lhs_bits <= 8 and rhs_bits <= 8:
+        return _mul_signed_twos_complement(lhs_w, rhs_w)
+    return lhs_w * rhs_w
+
+
+def _mul_unsigned_rows(lhs, rhs, *, width: int):
+    lhs_w = wire_of(lhs)
+    rhs_w = wire_of(rhs)
+    zero = zext(lhs_w[0:1], width) & 0
+    acc = zero
+    for bit_idx in range(rhs_w.width):
+        row = wire_of(zext(lhs_w, width) << bit_idx)[0:width]
+        acc = acc + wire_of(rhs_w[bit_idx : bit_idx + 1]).select(row, zero)
+    return wire_of(acc)[0:width]
+
+
+def _mul_signed_twos_complement(lhs, rhs):
+    lhs_w = wire_of(lhs)
+    rhs_w = wire_of(rhs)
+    lhs_bits = lhs_w.width
+    rhs_bits = rhs_w.width
+    product_w = lhs_bits + rhs_bits
+    zero = zext(lhs_w[0:1], product_w) & 0
+
+    unsigned_product = _mul_unsigned_rows(lhs_w, rhs_w, width=product_w)
+    lhs_correction = wire_of(rhs_w[rhs_bits - 1 : rhs_bits]).select(
+        wire_of(zext(lhs_w, product_w) << rhs_bits)[0:product_w],
+        zero,
+    )
+    rhs_correction = wire_of(lhs_w[lhs_bits - 1 : lhs_bits]).select(
+        wire_of(zext(rhs_w, product_w) << lhs_bits)[0:product_w],
+        zero,
+    )
+    return wire_of(unsigned_product - lhs_correction - rhs_correction)[0:product_w].as_signed()
 
 
 def _pack_lsb_bits(bits: Sequence[object]):
@@ -69,6 +107,37 @@ def cmpe42(in0, in1, in2, in3, cix, *, width: int = REDUCE_W):
     return _pack_lsb_bits(sum_bits), _shift_carry_bits(carry_bits, width=width), cox_bits[-1]
 
 
+def brent_kung_cpa_truncated(lhs, rhs, *, width: int):
+    lhs_w = wire_of(lhs)[0:width]
+    rhs_w = wire_of(rhs)[0:width]
+    p_init = [_bit(lhs_w, bit_idx) ^ _bit(rhs_w, bit_idx) for bit_idx in range(width)]
+    g = [_bit(lhs_w, bit_idx) & _bit(rhs_w, bit_idx) for bit_idx in range(width)]
+    p = list(p_init)
+
+    step = 1
+    while step < width:
+        for bit_idx in range((2 * step) - 1, width, 2 * step):
+            prev_idx = bit_idx - step
+            g[bit_idx] = g[bit_idx] | (p[bit_idx] & g[prev_idx])
+            p[bit_idx] = p[bit_idx] & p[prev_idx]
+        step *= 2
+
+    step //= 4
+    while step >= 1:
+        for bit_idx in range((3 * step) - 1, width, 2 * step):
+            prev_idx = bit_idx - step
+            g[bit_idx] = g[bit_idx] | (p[bit_idx] & g[prev_idx])
+            p[bit_idx] = p[bit_idx] & p[prev_idx]
+        step //= 2
+
+    zero = _bit(lhs_w, 0) & 0
+    sum_bits = []
+    for bit_idx in range(width):
+        carry_in = zero if bit_idx == 0 else g[bit_idx - 1]
+        sum_bits.append(p_init[bit_idx] ^ carry_in)
+    return _pack_lsb_bits(sum_bits)
+
+
 def _wallace_dot8_reduce(products: Sequence[object], *, width: int = REDUCE_W):
     if len(products) != 8:
         raise ValueError("dot8_reduce expects exactly 8 products")
@@ -79,8 +148,14 @@ def _wallace_dot8_reduce(products: Sequence[object], *, width: int = REDUCE_W):
     # row merge is intentionally left as the only CPA in this reduction.
     lo_sum, lo_carry, _ = cmpe42(terms[0], terms[1], terms[2], terms[3], zero_cix, width=width)
     hi_sum, hi_carry, _ = cmpe42(terms[4], terms[5], terms[6], terms[7], zero_cix, width=width)
-    final_sum, final_carry, _ = cmpe42(lo_sum, lo_carry, hi_sum, hi_carry, zero_cix, width=width)
-    return final_sum + final_carry
+    final_sum, final_carry, terminal_cox = cmpe42(lo_sum, lo_carry, hi_sum, hi_carry, zero_cix, width=width)
+
+    # Intentional truncation policy:
+    # `terminal_cox` has weight 2^width, which is outside the fixed-width output
+    # contract of this dot8 reducer (`sum[width-1:0]`). We intentionally drop
+    # this out-of-range carry at the fixed-width final CPA boundary.
+    _ = terminal_cox
+    return brent_kung_cpa_truncated(final_sum, final_carry, width=width)
 
 
 def wallace_dot8_tree(m, domain, *, inputs: dict | None = None, width: int = REDUCE_W, prefix: str = "wallace_dot8"):
@@ -144,13 +219,9 @@ def select_one_hot4(sel0, sel1, sel2, cand0, cand1, cand2, cand3):
     One-hot mode selection. Use muxes instead of boolean-masked
     multiplication so PyCircuit does not insert balancing registers in comb3.
     """
-    return wire_of(sel0)._select_internal(
-        wire_of(cand0),
-        wire_of(sel1)._select_internal(
-            wire_of(cand1),
-            wire_of(sel2)._select_internal(wire_of(cand2), wire_of(cand3)),
-        ),
-    )
+    lo_pair = wire_of(sel0)._select_internal(wire_of(cand0), wire_of(cand1))
+    hi_pair = wire_of(sel2)._select_internal(wire_of(cand2), wire_of(cand3))
+    return wire_of(sel0 | sel1)._select_internal(lo_pair, hi_pair)
 
 
 def sum_shift_pair(lo, hi, e1_a, e1_b, *, width: int = REDUCE_W):
@@ -160,4 +231,4 @@ def sum_shift_pair(lo, hi, e1_a, e1_b, *, width: int = REDUCE_W):
     sh_hi = zext(e1_a_w[1:2], 2) + zext(e1_b_w[1:2], 2)
     lo_scaled = wire_of(shift_scale_x1_x2_x4(wire_of(lo)[0:width], sh_lo))[0:width]
     hi_scaled = wire_of(shift_scale_x1_x2_x4(wire_of(hi)[0:width], sh_hi))[0:width]
-    return lo_scaled + hi_scaled
+    return brent_kung_cpa_truncated(lo_scaled, hi_scaled, width=width)

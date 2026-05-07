@@ -32,9 +32,13 @@ python3 "$MODEL_GEN_SCRIPT"
 
 CASES=(
   "tc_mode2a_sanity"
+  "tc_mode2a_sanity_rand_timing"
   "tc_mode2b_sanity"
+  "tc_mode2b_sanity_rand_timing"
   "tc_mode2c_sanity"
+  "tc_mode2c_sanity_rand_timing"
   "tc_mode2d_sanity"
+  "tc_mode2d_sanity_rand_timing"
   "tc_mode_switch_random"
 )
 

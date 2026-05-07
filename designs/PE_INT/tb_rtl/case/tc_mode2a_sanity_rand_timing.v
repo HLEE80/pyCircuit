@@ -17,7 +17,6 @@ module tc_mode2a_sanity_rand_timing;
     wire        vld_out;
 
     integer i;
-    integer got;
     integer err;
     integer exp_count;
     localparam integer N_TX = 1000;
@@ -59,7 +58,7 @@ module tc_mode2a_sanity_rand_timing;
     initial begin
         clk = 0; rst_n = 0; vld = 0; mode = 0;
         a = 0; b = 0; b1 = 0; e1_a = 0; e1_b0 = 0; e1_b1 = 0;
-        got = 0; err = 0; exp_count = 0; sb_reset();
+        err = 0; exp_count = 0; sb_reset();
 
         if (!$value$plusargs("GEN_DIR=%s", gen_dir)) begin
             gen_dir = "tb_rtl/case/generated";
